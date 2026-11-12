@@ -32,7 +32,7 @@ Go to **Project Settings → API**. Copy the **Project URL** and the **anon / pu
 |---|---|
 | Make it obvious | "Left this month" is the first thing you see. Nudges sit on top. |
 | Make it attractive | A logging streak and a "+1 vote" for each entry. A **No-spend day** counts as a vote too. |
-| Make it easy | Amount first. One-tap recent places. The category is auto-picked from the place. `20+7.5` adds up a split receipt. |
+| Make it easy | Cash-register amounts (type 1234 → $12.34). One-tap recent items and places. The category is auto-picked from the item, or from the place. |
 | Make it satisfying | Green bars and "✓ Logged today". |
 | Inversion | Over budget on a want → "make it difficult" (48-hour rule). 5+ visits to one place → "make the cue invisible". |
 
@@ -51,5 +51,14 @@ Rules engine:
 
 ## Limits
 - Needs a connection to save. If saving fails, the form keeps what you typed so you can retry.
-- Categories live in `config.js`. Edit them there, and both phones pick up the change.
+- Categories live in `categories.js` (v2+), not `config.js`. Edit them there, and both phones pick up the change.
 - Releasing an update: bump `VERSION` in `sw.js` and `app.js`. Don't overwrite your filled-in `config.js`.
+
+## v2 (Nov 11, 2026)
+- "What is it for?" field (item), with autocomplete and one-tap chips.
+- Insights → "What's being bought": average price × times per month = monthly cost, × 12 = yearly. Based on the last 90 days. Shared 📝 notes per item.
+- Kids category group (11 categories). Categories are grouped and moved to `categories.js`.
+- Cash-register `$` amount entry. History search. CSV now includes "What".
+- A nudge flags repeat wants that cost over $300 a year.
+- Service worker fetches with no-cache, so updates show up right away.
+- Database: run `update-v2.sql` once (already included in `supabase-setup.sql` for new installs).

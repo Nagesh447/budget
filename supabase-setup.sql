@@ -109,6 +109,14 @@ create policy ns_delete on public.no_spend_days for delete to authenticated
 
 revoke all on public.expenses, public.budgets, public.no_spend_days from anon;
 
+-- ---------- Table access for logged-in users (new Supabase projects don't grant it automatically) ----------
+grant usage on schema public to authenticated;
+grant select on public.households, public.household_members to authenticated;
+grant select, insert, update, delete on public.expenses, public.budgets to authenticated;
+grant select, insert, delete on public.no_spend_days to authenticated;
+grant update (name) on public.households to authenticated;
+grant update (display_name) on public.household_members to authenticated;
+
 -- ---------- Create / join a household ----------
 create or replace function public.create_household(p_name text, p_display text)
 returns uuid language plpgsql security definer set search_path = public as $$
@@ -161,3 +169,25 @@ do $$ begin alter publication supabase_realtime add table public.expenses;      
 do $$ begin alter publication supabase_realtime add table public.budgets;           exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table public.no_spend_days;     exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table public.household_members; exception when duplicate_object then null; end $$;
+
+-- ---------- v2: item (what it was for) + item notes ----------
+
+alter table public.expenses add column if not exists item text check (char_length(item) <= 60);
+create index if not exists expenses_hh_item on public.expenses (household_id, spent_on) where item is not null;
+
+create table if not exists public.item_notes (
+  household_id uuid not null references public.households(id) on delete cascade,
+  item_key     text not null check (char_length(item_key) <= 60),   -- lower-case item name
+  note         text not null check (char_length(note) between 1 and 200),
+  updated_by   uuid references auth.users(id) on delete set null,
+  updated_at   timestamptz not null default now(),
+  primary key (household_id, item_key)
+);
+alter table public.item_notes enable row level security;
+drop policy if exists notes_all on public.item_notes;
+create policy notes_all on public.item_notes for all to authenticated
+  using (household_id = public.my_household()) with check (household_id = public.my_household());
+revoke all on public.item_notes from anon;
+grant select, insert, update, delete on public.item_notes to authenticated;
+
+do $$ begin alter publication supabase_realtime add table public.item_notes; exception when duplicate_object then null; end $$;

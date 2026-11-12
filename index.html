@@ -84,12 +84,15 @@
       <h2 id="sheet-title">Add expense</h2>
       <button type="button" class="icon-btn" id="sheet-close" aria-label="Close">✕</button>
     </div>
-    <input id="f-amount" class="amount" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount">
+    <input id="f-amount" class="amount" inputmode="numeric" placeholder="$0.00" autocomplete="off" aria-label="Amount">
+    <label>What is it for?<input id="f-item" list="items" maxlength="60" placeholder="Milk, diapers, latte, gas…" autocomplete="off"></label>
+    <datalist id="items"></datalist>
+    <div id="item-chips" class="chips"></div>
     <label>Where?<input id="f-place" list="places" maxlength="60" placeholder="Costco, Shell, Amazon…" autocomplete="off"></label>
     <datalist id="places"></datalist>
     <div id="place-chips" class="chips"></div>
     <div class="lbl">Category</div>
-    <div id="cat-chips" class="chips"></div>
+    <div id="cat-chips"></div>
     <div class="row2">
       <label>Date<input id="f-date" type="date"></label>
       <label>Note<input id="f-note" maxlength="100" placeholder="optional"></label>
@@ -101,6 +104,7 @@
 <div id="vote" class="vote hidden">+1 vote</div>
 
 <script src="config.js"></script>
+<script src="categories.js"></script>
 <script src="supabase.js"></script>
 <script src="app.js"></script>
 </body>

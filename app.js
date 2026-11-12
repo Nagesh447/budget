@@ -5,7 +5,7 @@
 // 4. Make it satisfying -> green bars, "logged today" tick; inversion: make overspending difficult
 (() => {
 'use strict';
-const VERSION = 'budget-v1';
+const VERSION = 'budget-v2';
 const cfg = window.APP_CONFIG || {};
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -17,9 +17,12 @@ const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())
 const today = () => ymd(new Date());
 const parseYmd = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
 const addDays = (s, n) => { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
-const CATS = (cfg.CATEGORIES && cfg.CATEGORIES.length) ? cfg.CATEGORIES : [{ name: 'Other', icon: '📦', essential: false }];
+const CATS = (window.BUDGET_CATEGORIES && window.BUDGET_CATEGORIES.length) ? window.BUDGET_CATEGORIES
+  : (cfg.CATEGORIES && cfg.CATEGORIES.length) ? cfg.CATEGORIES : [{ name: 'Other', icon: '📦', essential: false }];
 const CAT = Object.fromEntries(CATS.map(c => [c.name, c]));
 const icon = c => CAT[c]?.icon || '📦';
+const shortName = c => CAT[c]?.short || c;
+const groupOf = c => CAT[c]?.group || 'Other';
 const clean = s => String(s || '').replace(/\s+/g, ' ').trim();
 
 const configured = !!cfg.SUPABASE_URL && !/YOUR-/.test(String(cfg.SUPABASE_URL) + String(cfg.SUPABASE_ANON_KEY));
@@ -28,8 +31,9 @@ const sb = window.__SB_MOCK || (configured && window.supabase
 
 const S = {
   user: null, household: null, members: [], month: today().slice(0, 7),
-  expenses: [], budgets: {}, places: {}, placeList: [], myDays: new Set(),
-  view: 'home', channel: null, hWho: 'all', hCat: 'all', cat: '', catTouched: false, editing: null,
+  expenses: [], budgets: {}, places: {}, placeList: [], items: {}, itemList: [], buys: [], notes: {}, myDays: new Set(),
+  view: 'home', channel: null, hWho: 'all', hCat: 'all', hQ: '', iSort: 'money',
+  cat: '', catTouched: false, editing: null, cents: 0,
 };
 
 // ---------- small UI helpers ----------
@@ -134,18 +138,45 @@ async function loadBudgets() {
   if (error) throw error;
   S.budgets = Object.fromEntries((data || []).filter(b => Number(b.monthly_limit) > 0).map(b => [b.category, Number(b.monthly_limit)]));
 }
-async function loadPlaces() {
-  const { data, error } = await sb.from('expenses').select('place, category, created_at').eq('household_id', S.household.id)
-    .not('place', 'is', null).order('created_at', { ascending: false }).limit(400);
+async function loadSuggestions() {
+  const { data, error } = await sb.from('expenses').select('place, item, category, created_at').eq('household_id', S.household.id)
+    .order('created_at', { ascending: false }).limit(500);
   if (error) throw error;
-  const map = {};
+  const places = {}, items = {};
   for (const r of data || []) {
-    const k = r.place.toLowerCase();
-    if (!map[k]) map[k] = { place: r.place, category: r.category, count: 0 }; // newest row wins name + category
-    map[k].count++;
+    for (const [field, map] of [['place', places], ['item', items]]) {
+      if (!r[field]) continue;
+      const k = r[field].toLowerCase();
+      if (!map[k]) map[k] = { name: r[field], place: r[field], category: r.category, count: 0 }; // newest row wins name + category
+      map[k].count++;
+    }
   }
-  S.places = map;
-  S.placeList = Object.values(map).sort((a, b) => b.count - a.count);
+  S.places = places; S.placeList = Object.values(places).sort((a, b) => b.count - a.count);
+  S.items = items; S.itemList = Object.values(items).sort((a, b) => b.count - a.count);
+}
+async function loadBuys() { // last 90 days of named items, for the "what's being bought" formula
+  const { data, error } = await sb.from('expenses').select('item, amount, spent_on, category').eq('household_id', S.household.id)
+    .not('item', 'is', null).gte('spent_on', addDays(today(), -89));
+  if (error) throw error; S.buys = data || [];
+}
+async function loadNotes() {
+  const { data, error } = await sb.from('item_notes').select('item_key, note').eq('household_id', S.household.id);
+  if (error) throw error; S.notes = Object.fromEntries((data || []).map(n => [n.item_key, n.note]));
+}
+function itemStats() {
+  const rows = S.buys.filter(r => r.item); if (!rows.length) return [];
+  const first = rows.reduce((a, r) => r.spent_on < a ? r.spent_on : a, today());
+  const days = Math.max(7, Math.round((parseYmd(today()) - parseYmd(first)) / 864e5) + 1);
+  const m = {};
+  for (const r of rows) {
+    const k = r.item.toLowerCase();
+    const o = m[k] || (m[k] = { key: k, name: r.item, category: r.category, n: 0, s: 0 });
+    o.n++; o.s += Number(r.amount);
+  }
+  return Object.values(m).map(o => {
+    const avg = o.s / o.n, perMo = o.n / days * 30;
+    return { ...o, avg, perMo, mo: avg * perMo, yr: avg * perMo * 12, days };
+  });
 }
 async function loadStreak() {
   const since = addDays(today(), -120);
@@ -162,7 +193,7 @@ function streak() {
   return n;
 }
 async function refresh(doRender = true) {
-  await Promise.all([loadMembers(), loadMonth(), loadBudgets(), loadPlaces(), loadStreak()]);
+  await Promise.all([loadMembers(), loadMonth(), loadBudgets(), loadSuggestions(), loadBuys(), loadNotes(), loadStreak()]);
   if (doRender) render();
 }
 let refreshT;
@@ -172,7 +203,7 @@ function subscribe() {
   if (!sb.channel || !S.household) return;
   const filter = `household_id=eq.${S.household.id}`;
   let ch = sb.channel('hh-' + S.household.id);
-  for (const table of ['expenses', 'budgets', 'no_spend_days', 'household_members'])
+  for (const table of ['expenses', 'budgets', 'no_spend_days', 'household_members', 'item_notes'])
     ch = ch.on('postgres_changes', { event: '*', schema: 'public', table, filter }, refreshSoon);
   S.channel = ch.subscribe();
 }
@@ -212,6 +243,10 @@ function nudges() {
   const top = Object.values(byPlace).sort((a, b) => b.n - a.n)[0];
   if (top && top.n >= 5)
     out.push({ p: 2, t: `${top.name}: ${top.n} visits, ${money(top.s)}`, d: 'Make the cue invisible. Change the route, delete the app, or write an implementation intention: "When I want to go to ' + top.name + ', I will ___ instead."' });
+  // "What" insight: a small repeat purchase that adds up over a year
+  const pricey = itemStats().filter(o => !CAT[o.category]?.essential && o.n >= 3 && o.yr >= 300).sort((a, b) => b.yr - a.yr)[0];
+  if (pricey)
+    out.push({ p: 2, t: `${pricey.name} ≈ ${money(pricey.yr)} a year`, d: `${money(pricey.avg)} × ${pricey.perMo.toFixed(1)} times a month. Keep it if it's worth it. If not, make it difficult: set a weekly limit or swap it for a cheaper version.` });
   if (!Object.keys(S.budgets).length && S.expenses.length >= 5)
     out.push({ p: 2, t: 'Set 3 budgets, not 14', d: 'Pick only your top 3 categories in Settings. Small and specific beats complete.', acts: [['go-settings', 'Set budgets']] });
   const st = streak();
@@ -222,7 +257,7 @@ function nudges() {
 // ---------- rendering ----------
 function rowHtml(e) {
   return `<button type="button" class="exp" data-id="${esc(e.id)}"><span class="ic">${icon(e.category)}</span>
-    <span class="mid"><b>${esc(e.place || e.category)}</b><small>${esc(e.category)}${e.note ? ' · ' + esc(e.note) : ''} · ${esc(nameOf(e.user_id))}</small></span>
+    <span class="mid"><b>${esc(e.item || e.place || shortName(e.category))}</b><small>${e.item && e.place ? '📍 ' + esc(e.place) + ' · ' : ''}${esc(shortName(e.category))}${e.note ? ' · ' + esc(e.note) : ''} · ${esc(nameOf(e.user_id))}</small></span>
     <span class="amt">${money(e.amount)}</span></button>`;
 }
 function render() {
@@ -274,15 +309,25 @@ function renderHome() {
 }
 
 function renderHistory() {
+  const cats = [...new Set(S.expenses.map(e => e.category))].sort();
+  const el = $('#view-history');
+  el.innerHTML = `<div class="filters"><select id="h-who" aria-label="Who"><option value="all">Everyone</option>
+    ${S.members.map(m => `<option value="${esc(m.user_id)}"${S.hWho === m.user_id ? ' selected' : ''}>${esc(nameOf(m.user_id))}</option>`).join('')}</select>
+    <select id="h-cat" aria-label="Category"><option value="all">All categories</option>
+    ${cats.map(c => `<option value="${esc(c)}"${S.hCat === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+    <input id="h-q" class="search" type="search" placeholder="Search what, where or note" value="${esc(S.hQ)}"><div id="h-list"></div>`;
+  $('#h-who', el).addEventListener('change', e => { S.hWho = e.target.value; renderHistoryList(); });
+  $('#h-cat', el).addEventListener('change', e => { S.hCat = e.target.value; renderHistoryList(); });
+  $('#h-q', el).addEventListener('input', e => { S.hQ = e.target.value; renderHistoryList(); });
+  renderHistoryList();
+}
+function renderHistoryList() {
   let list = S.expenses;
   if (S.hWho !== 'all') list = list.filter(e => e.user_id === S.hWho);
   if (S.hCat !== 'all') list = list.filter(e => e.category === S.hCat);
-  const cats = [...new Set(S.expenses.map(e => e.category))].sort();
-  let h = `<div class="filters"><select id="h-who" aria-label="Who"><option value="all">Everyone</option>
-    ${S.members.map(m => `<option value="${esc(m.user_id)}"${S.hWho === m.user_id ? ' selected' : ''}>${esc(nameOf(m.user_id))}</option>`).join('')}</select>
-    <select id="h-cat" aria-label="Category"><option value="all">All categories</option>
-    ${cats.map(c => `<option${S.hCat === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></div>`;
-  h += `<div class="pad small muted">${list.length} entries · ${money(total(list))}</div>`;
+  const q = S.hQ.trim().toLowerCase();
+  if (q) list = list.filter(e => [e.item, e.place, e.note, e.category].some(v => v && v.toLowerCase().includes(q)));
+  let h = `<div class="pad small muted">${list.length} entries · ${money(total(list))}</div>`;
   if (!list.length) h += '<div class="empty">Nothing here.</div>';
   const days = {};
   for (const e of list) (days[e.spent_on] = days[e.spent_on] || []).push(e);
@@ -290,31 +335,58 @@ function renderHistory() {
     const label = parseYmd(d).toLocaleDateString(cfg.LOCALE || 'en-US', { weekday: 'short', month: 'short', day: 'numeric' });
     h += `<div class="day-head"><span>${esc(label)}</span><span>${money(total(items))}</span></div><div class="card">${items.map(rowHtml).join('')}</div>`;
   }
-  const el = $('#view-history'); el.innerHTML = h;
-  $('#h-who', el).addEventListener('change', e => { S.hWho = e.target.value; renderHistory(); });
-  $('#h-cat', el).addEventListener('change', e => { S.hCat = e.target.value; renderHistory(); });
+  $('#h-list').innerHTML = h;
 }
 
+function itemsCardHtml() {
+  const stats = itemStats();
+  if (!stats.length) return `<div class="card"><h2>What's being bought</h2><p class="muted small">Fill in "What is it for?" when you add expenses. After a few entries you'll see what each item really costs per month and per year.</p></div>`;
+  const sorted = stats.sort((a, b) => S.iSort === 'often' ? (b.n - a.n || b.s - a.s) : (b.mo - a.mo)).slice(0, 15);
+  let h = `<div class="card"><div class="row-between"><h2>What's being bought</h2>
+    <select id="i-sort" aria-label="Sort"><option value="money"${S.iSort === 'money' ? ' selected' : ''}>Most money</option><option value="often"${S.iSort === 'often' ? ' selected' : ''}>Most often</option></select></div>
+    <p class="muted small">Last ${stats[0].days} days. Formula: average price × times per month = monthly cost, × 12 = yearly.</p>`;
+  for (const o of sorted) {
+    const note = S.notes[o.key];
+    h += `<div class="item-row" data-key="${esc(o.key)}">
+      <div class="row-between"><b>${icon(o.category)} ${esc(o.name)}</b><span class="muted small">${o.n}× · ${money(o.s)}</span></div>
+      <div class="formula">${money(o.avg)} avg × ${o.perMo.toFixed(1)}/mo = <b>${money(o.mo)}/mo</b> ≈ ${money(o.yr)}/yr</div>
+      ${note ? `<div class="inote">📝 ${esc(note)}</div>` : ''}
+      <button type="button" class="btn inline" data-act="note-edit">${note ? 'Edit note' : '📝 Add note'}</button>
+      <div class="note-edit hidden"><input maxlength="200" placeholder="e.g. Buy in bulk at Costco, cheaper" value="${esc(note || '')}"><button type="button" class="btn inline primary" data-act="note-save">Save</button></div>
+    </div>`;
+  }
+  return h + '</div>';
+}
 function renderInsights() {
   const list = S.expenses, spent = total(list), mi = monthInfo();
-  if (!list.length) { $('#view-insights').innerHTML = '<div class="empty">Log a few expenses to see insights.</div>'; return; }
-  const byCat = Object.entries(sumBy(list, 'category')).sort((a, b) => b[1] - a[1]);
-  const ess = list.filter(e => CAT[e.category]?.essential).reduce((a, e) => a + Number(e.amount), 0);
-  const places = {};
-  for (const e of list) { const k = (e.place || '(no place)').toLowerCase(); places[k] = places[k] || { name: e.place || '(no place)', n: 0, s: 0 }; places[k].n++; places[k].s += Number(e.amount); }
-  const topPlaces = Object.values(places).sort((a, b) => b.s - a.s).slice(0, 10);
-  const byWho = sumBy(list, 'user_id');
-  const biggest = list.reduce((a, e) => Number(e.amount) > Number(a.amount) ? e : a, list[0]);
-  let h = `<div class="card"><div class="row-between"><div><div class="muted small">Daily average</div><div class="big2">${money(spent / Math.max(1, mi.day))}</div></div>
-    <div><div class="muted small">Entries</div><div class="big2">${list.length}</div></div></div></div>`;
-  h += `<div class="card"><h2>Needs vs wants</h2><div class="row-between"><span>Essentials</span><b>${money(ess)}</b></div>
-    <div class="bar"><i data-w="${spent ? ess / spent * 100 : 0}"></i></div><div class="row-between"><span>Non-essentials</span><b>${money(spent - ess)}</b></div></div>`;
-  h += '<div class="card"><h2>By category</h2>' + byCat.map(([c, s]) => `<div class="cat-row"><div class="row-between"><span>${icon(c)} ${esc(c)}</span>
-    <span><b>${money(s)}</b> <span class="muted small">${Math.round(s / spent * 100)}%</span></span></div><div class="bar"><i data-w="${s / byCat[0][1] * 100}"></i></div></div>`).join('') + '</div>';
-  h += '<div class="card"><h2>Where the money went</h2>' + topPlaces.map(p => `<div class="cat-row row-between"><span>📍 ${esc(p.name)} <span class="muted small">×${p.n}</span></span><b>${money(p.s)}</b></div>`).join('') + '</div>';
-  h += '<div class="card"><h2>Who logged what</h2>' + Object.entries(byWho).map(([u, s]) => `<div class="cat-row row-between"><span>${esc(nameOf(u))}</span><b>${money(s)}</b></div>`).join('') + '</div>';
-  h += `<div class="card"><h2>Biggest expense</h2>${rowHtml(biggest)}</div>`;
-  const el = $('#view-insights'); el.innerHTML = h; applyBars(el);
+  const el = $('#view-insights');
+  let h = '';
+  if (!list.length) h += '<div class="empty">No expenses this month yet.</div>';
+  else {
+    const byCat = Object.entries(sumBy(list, 'category')).sort((a, b) => b[1] - a[1]);
+    const byGroup = {}; for (const e of list) { const g = groupOf(e.category); byGroup[g] = (byGroup[g] || 0) + Number(e.amount); }
+    const ess = list.filter(e => CAT[e.category]?.essential).reduce((a, e) => a + Number(e.amount), 0);
+    const places = {};
+    for (const e of list) { const k = (e.place || '(no place)').toLowerCase(); places[k] = places[k] || { name: e.place || '(no place)', n: 0, s: 0 }; places[k].n++; places[k].s += Number(e.amount); }
+    const topPlaces = Object.values(places).sort((a, b) => b.s - a.s).slice(0, 10);
+    const byWho = sumBy(list, 'user_id');
+    const biggest = list.reduce((a, e) => Number(e.amount) > Number(a.amount) ? e : a, list[0]);
+    h += `<div class="card"><div class="row-between"><div><div class="muted small">Daily average</div><div class="big2">${money(spent / Math.max(1, mi.day))}</div></div>
+      <div><div class="muted small">Entries</div><div class="big2">${list.length}</div></div></div></div>`;
+    h += '<div class="card"><h2>By group</h2>' + Object.entries(byGroup).sort((a, b) => b[1] - a[1]).map(([g, s]) => `<div class="cat-row"><div class="row-between"><span>${esc(g)}</span>
+      <span><b>${money(s)}</b> <span class="muted small">${Math.round(s / spent * 100)}%</span></span></div><div class="bar"><i data-w="${s / spent * 100}"></i></div></div>`).join('') + '</div>';
+    h += `<div class="card"><h2>Needs vs wants</h2><div class="row-between"><span>Essentials</span><b>${money(ess)}</b></div>
+      <div class="bar"><i data-w="${spent ? ess / spent * 100 : 0}"></i></div><div class="row-between"><span>Non-essentials</span><b>${money(spent - ess)}</b></div></div>`;
+    h += itemsCardHtml();
+    h += '<div class="card"><h2>By category</h2>' + byCat.map(([c, s]) => `<div class="cat-row"><div class="row-between"><span>${icon(c)} ${esc(c)}</span>
+      <span><b>${money(s)}</b> <span class="muted small">${Math.round(s / spent * 100)}%</span></span></div><div class="bar"><i data-w="${s / byCat[0][1] * 100}"></i></div></div>`).join('') + '</div>';
+    h += '<div class="card"><h2>Where the money went</h2>' + topPlaces.map(p => `<div class="cat-row row-between"><span>📍 ${esc(p.name)} <span class="muted small">×${p.n}</span></span><b>${money(p.s)}</b></div>`).join('') + '</div>';
+    h += '<div class="card"><h2>Who logged what</h2>' + Object.entries(byWho).map(([u, s]) => `<div class="cat-row row-between"><span>${esc(nameOf(u))}</span><b>${money(s)}</b></div>`).join('') + '</div>';
+    h += `<div class="card"><h2>Biggest expense</h2>${rowHtml(biggest)}</div>`;
+  }
+  if (!list.length) h += itemsCardHtml();
+  el.innerHTML = h; applyBars(el);
+  const sel = $('#i-sort', el); if (sel) sel.addEventListener('change', e => { S.iSort = e.target.value; renderInsights(); });
 }
 
 function renderSettings() {
@@ -324,9 +396,12 @@ function renderSettings() {
     <div class="muted small">Members: ${S.members.map(m => esc(m.display_name)).join(', ')}</div></div>`;
   h += `<div class="card"><label>Your name<input id="s-name" maxlength="30" value="${esc(me?.display_name || '')}"></label>
     <button type="button" class="btn" data-act="save-name">Save name</button></div>`;
-  h += `<div class="card"><h2>Monthly budgets</h2><p class="muted small">Start with your top 3. Leave the rest blank.</p>
-    ${CATS.map(c => `<div class="bud-row"><span>${c.icon} ${esc(c.name)}</span><input inputmode="decimal" data-bud="${esc(c.name)}" placeholder="—" value="${S.budgets[c.name] ?? ''}"></div>`).join('')}
-    <button type="button" class="btn primary" data-act="save-budgets">Save budgets</button></div>`;
+  h += `<div class="card"><h2>Monthly budgets</h2><p class="muted small">Start with your top 3. Leave the rest blank.</p>`;
+  for (const g of [...new Set(CATS.map(c => c.group || 'Other'))]) {
+    h += `<div class="chip-group">${esc(g)}</div>` + CATS.filter(c => (c.group || 'Other') === g).map(c =>
+      `<div class="bud-row"><span>${c.icon} ${esc(c.short || c.name)}</span><input inputmode="decimal" data-bud="${esc(c.name)}" placeholder="$ —" value="${S.budgets[c.name] ?? ''}"></div>`).join('');
+  }
+  h += `<button type="button" class="btn primary" data-act="save-budgets">Save budgets</button></div>`;
   h += `<div class="card"><button type="button" class="btn" data-act="export">Export ${esc(monthName())} (CSV)</button>
     <button type="button" class="btn" data-act="signout">Sign out</button>
     <p class="muted small center">${esc(S.user.email || '')} · ${VERSION}</p></div>`;
@@ -339,13 +414,27 @@ function setCat(c, touched) {
   $$('#cat-chips .chip').forEach(b => b.classList.toggle('active', b.dataset.cat === c));
 }
 function renderPlaceUI() {
-  $('#places').innerHTML = S.placeList.slice(0, 60).map(p => `<option value="${esc(p.place)}"></option>`).join('');
-  $('#place-chips').innerHTML = S.placeList.slice(0, 6).map(p => `<button type="button" class="chip" data-place="${esc(p.place)}">${icon(p.category)} ${esc(p.place)}</button>`).join('');
+  $('#places').innerHTML = S.placeList.slice(0, 80).map(p => `<option value="${esc(p.name)}"></option>`).join('');
+  $('#place-chips').innerHTML = S.placeList.slice(0, 6).map(p => `<button type="button" class="chip" data-place="${esc(p.name)}">📍 ${esc(p.name)}</button>`).join('');
+  $('#items').innerHTML = S.itemList.slice(0, 120).map(p => `<option value="${esc(p.name)}"></option>`).join('');
+  $('#item-chips').innerHTML = S.itemList.slice(0, 8).map(p => `<button type="button" class="chip" data-item="${esc(p.name)}">${icon(p.category)} ${esc(p.name)}</button>`).join('');
+}
+// Cash-register amount: digits fill in from the right. Typing 1 2 3 4 shows $12.34.
+function showAmount() {
+  const a = $('#f-amount');
+  a.value = S.cents ? money(S.cents / 100) : '';
+  const end = a.value.length; try { a.setSelectionRange(end, end); } catch (_) {}
+}
+function amountInput() {
+  const digits = $('#f-amount').value.replace(/\D/g, '').replace(/^0+/, '').slice(0, 8);
+  S.cents = digits ? parseInt(digits, 10) : 0;
+  showAmount();
 }
 function openSheet(exp, date) {
   S.editing = exp || null; S.catTouched = !!exp;
   $('#sheet-title').textContent = exp ? 'Edit expense' : 'Add expense';
-  $('#f-amount').value = exp ? Number(exp.amount).toFixed(2) : '';
+  S.cents = exp ? Math.round(Number(exp.amount) * 100) : 0; showAmount();
+  $('#f-item').value = exp?.item || '';
   $('#f-place').value = exp?.place || '';
   $('#f-note').value = exp?.note || '';
   $('#f-date').max = today();
@@ -356,16 +445,21 @@ function openSheet(exp, date) {
   $('#sheet').showModal();
   if (!exp) setTimeout(() => $('#f-amount').focus(), 60);
 }
+function itemChanged() { // the item's last category wins over the place's
+  const it = S.items[clean($('#f-item').value).toLowerCase()];
+  if (it && !S.catTouched && CAT[it.category]) setCat(it.category);
+}
 function placeChanged() {
+  if (S.items[clean($('#f-item').value).toLowerCase()]) return;
   const p = S.places[clean($('#f-place').value).toLowerCase()];
   if (p && !S.catTouched && CAT[p.category]) setCat(p.category);
 }
 async function saveExpense(e) {
   e.preventDefault();
-  const amount = parseAmount($('#f-amount').value);
+  const amount = Math.round(S.cents) / 100;
   if (!(amount > 0)) { toast('Enter an amount.'); $('#f-amount').focus(); return; }
   if (!S.cat) { toast('Pick a category.'); return; }
-  const row = { amount, category: S.cat, place: clean($('#f-place').value) || null, note: clean($('#f-note').value) || null, spent_on: $('#f-date').value || today() };
+  const row = { amount, category: S.cat, item: clean($('#f-item').value) || null, place: clean($('#f-place').value) || null, note: clean($('#f-note').value) || null, spent_on: $('#f-date').value || today() };
   if (row.spent_on > today()) { toast("Date can't be in the future."); return; }
   const btn = $('#f-save'); btn.disabled = true;
   try {
@@ -419,18 +513,37 @@ async function saveBudgets() {
 }
 function exportCsv() {
   const cell = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
-  const lines = [['Date', 'Who', 'Amount', 'Category', 'Where', 'Note'].map(cell).join(',')];
+  const lines = [['Date', 'Who', 'Amount', 'What', 'Category', 'Where', 'Note'].map(cell).join(',')];
   for (const e of [...S.expenses].reverse())
     lines.push([e.spent_on, S.members.find(m => m.user_id === e.user_id)?.display_name || '',
-      Number(e.amount).toFixed(2), e.category, e.place, e.note].map(cell).join(','));
+      Number(e.amount).toFixed(2), e.item, e.category, e.place, e.note].map(cell).join(','));
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([lines.join('\r\n')], { type: 'text/csv' }));
   a.download = `budget-${S.month}.csv`; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
-async function act(a) {
+async function saveNote(row) {
+  const key = row.dataset.key, note = clean($('input', row).value).slice(0, 200);
+  try {
+    if (note) {
+      const { error } = await sb.from('item_notes').upsert({ household_id: S.household.id, item_key: key, note, updated_by: S.user.id, updated_at: new Date().toISOString() }, { onConflict: 'household_id,item_key' });
+      if (error) throw error;
+    } else {
+      const { error } = await sb.from('item_notes').delete().eq('household_id', S.household.id).eq('item_key', key);
+      if (error) throw error;
+    }
+    await loadNotes(); render(); toast(note ? 'Note saved for both of you.' : 'Note removed.');
+  } catch (err) { toast(friendly(err)); }
+}
+async function act(a, el) {
   const t = today();
   switch (a) {
+    case 'note-edit': {
+      const box = $('.note-edit', el.closest('.item-row')); box.classList.toggle('hidden');
+      if (!box.classList.contains('hidden')) $('input', box).focus();
+      return;
+    }
+    case 'note-save': return saveNote(el.closest('.item-row'));
     case 'nospend-today': return noSpend(t);
     case 'nospend-yesterday': return noSpend(addDays(t, -1));
     case 'log-yesterday': return openSheet(null, addDays(t, -1));
@@ -456,7 +569,7 @@ async function signOut() {
   show('auth');
 }
 function onMainClick(e) {
-  const actEl = e.target.closest('[data-act]'); if (actEl) { act(actEl.dataset.act); return; }
+  const actEl = e.target.closest('[data-act]'); if (actEl) { act(actEl.dataset.act, actEl); return; }
   const row = e.target.closest('[data-id]');
   if (row) {
     const exp = S.expenses.find(x => x.id === row.dataset.id); if (!exp) return;
@@ -491,7 +604,18 @@ function wire() {
   $('#f-delete').addEventListener('click', deleteExpense);
   $('#f-place').addEventListener('input', placeChanged);
   $('#f-place').addEventListener('change', placeChanged);
-  $('#cat-chips').innerHTML = CATS.map(c => `<button type="button" class="chip" data-cat="${esc(c.name)}">${c.icon} ${esc(c.name)}</button>`).join('');
+  $('#cat-chips').innerHTML = [...new Set(CATS.map(c => c.group || 'Other'))].map(g =>
+    `<div class="chip-group">${esc(g)}</div><div class="chips">` + CATS.filter(c => (c.group || 'Other') === g).map(c =>
+      `<button type="button" class="chip" data-cat="${esc(c.name)}">${c.icon} ${esc(c.short || c.name)}</button>`).join('') + '</div>').join('');
+  const amt = $('#f-amount');
+  amt.addEventListener('input', amountInput);
+  amt.addEventListener('focus', showAmount); amt.addEventListener('click', showAmount);
+  $('#f-item').addEventListener('input', itemChanged);
+  $('#f-item').addEventListener('change', itemChanged);
+  $('#item-chips').addEventListener('click', e => {
+    const b = e.target.closest('[data-item]'); if (!b) return;
+    $('#f-item').value = b.dataset.item; itemChanged();
+  });
   $('#cat-chips').addEventListener('click', e => { const b = e.target.closest('[data-cat]'); if (b) setCat(b.dataset.cat, true); });
   $('#place-chips').addEventListener('click', e => {
     const b = e.target.closest('[data-place]'); if (!b) return;
@@ -514,6 +638,6 @@ async function boot() {
     if (ev === 'SIGNED_IN' || ev === 'SIGNED_OUT' || ev === 'INITIAL_SESSION') setTimeout(() => route(session), 0);
   });
 }
-window.__budget = { S, nudges, parseAmount, streak }; // for tests
+window.__budget = { S, nudges, parseAmount, streak, itemStats }; // for tests
 boot();
 })();
