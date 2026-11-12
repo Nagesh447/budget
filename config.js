@@ -2,7 +2,7 @@
 // The anon / publishable key is public by design (Row Level Security protects the data).
 // NEVER put the service_role / secret key here.
 window.APP_CONFIG = {
-  SUPABASE_URL: "https://jfuirjlfxbhlkbwyeaqo.supabase.co/rest/v1/",
+  SUPABASE_URL: "https://jfuirjlfxbhlkbwyeaqo.supabase.co",
   SUPABASE_ANON_KEY: "sb_publishable_WkGw8fml6oE7l_qt1C3_sA_A6XnJKyb",
 
   CURRENCY: "USD",
