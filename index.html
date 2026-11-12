@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://*.supabase.co wss://*.supabase.co; object-src 'none'; base-uri 'none'; form-action 'none'; manifest-src 'self'; worker-src 'self'">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Budget">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+<title>Our Budget</title>
+</head>
+<body>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<section id="screen-loading" class="screen"><p class="muted center pad">Loading…</p></section>
+
+<section id="screen-config" class="screen hidden">
+  <div class="card"><h1>Almost there</h1>
+  <p>Open <code>config.js</code> and paste your Supabase URL and anon key (README step 3).</p></div>
+</section>
+
+<section id="screen-auth" class="screen hidden">
+  <div class="brand">
+    <img src="icon-192.png" alt="" width="64" height="64">
+    <h1>Our Budget</h1>
+    <p class="muted">Every expense you log is a vote for the household you want to be.</p>
+  </div>
+  <form id="auth-form" class="card" novalidate>
+    <label>Email<input id="auth-email" type="email" autocomplete="email" required></label>
+    <label>Password<input id="auth-pass" type="password" autocomplete="current-password" minlength="8" required></label>
+    <button type="submit" class="btn primary">Sign in</button>
+    <button type="button" class="btn" id="btn-signup">Create account</button>
+    <p id="auth-msg" class="muted small"></p>
+  </form>
+</section>
+
+<section id="screen-setup" class="screen hidden">
+  <h1 class="pad">Set up your household</h1>
+  <div class="card">
+    <label>Your name (what your partner sees)<input id="setup-name" maxlength="30" autocomplete="given-name"></label>
+  </div>
+  <div class="card">
+    <h2>First one here?</h2>
+    <label>Household name<input id="setup-hh" maxlength="40" value="Our home"></label>
+    <button class="btn primary" id="btn-create" type="button">Create household</button>
+  </div>
+  <div class="card">
+    <h2>Partner already created it?</h2>
+    <label>Join code<input id="setup-code" maxlength="8" autocapitalize="characters" autocomplete="off" placeholder="8 characters"></label>
+    <button class="btn" id="btn-join" type="button">Join household</button>
+  </div>
+  <button class="btn link" id="btn-setup-signout" type="button">Sign out</button>
+</section>
+
+<section id="screen-app" class="screen hidden">
+  <header class="top">
+    <button class="icon-btn" id="m-prev" type="button" aria-label="Previous month">‹</button>
+    <h1 id="m-label"></h1>
+    <button class="icon-btn" id="m-next" type="button" aria-label="Next month">›</button>
+  </header>
+  <main>
+    <div id="view-home" class="view"></div>
+    <div id="view-history" class="view hidden"></div>
+    <div id="view-insights" class="view hidden"></div>
+    <div id="view-settings" class="view hidden"></div>
+  </main>
+  <button id="fab" class="fab" type="button" aria-label="Add expense">＋</button>
+  <nav class="tabs">
+    <button type="button" data-view="home" class="active"><span>🏠</span>Home</button>
+    <button type="button" data-view="history"><span>📜</span>History</button>
+    <button type="button" data-view="insights"><span>📊</span>Insights</button>
+    <button type="button" data-view="settings"><span>⚙️</span>Settings</button>
+  </nav>
+</section>
+
+<dialog id="sheet" class="sheet">
+  <form id="exp-form" novalidate>
+    <div class="sheet-head">
+      <h2 id="sheet-title">Add expense</h2>
+      <button type="button" class="icon-btn" id="sheet-close" aria-label="Close">✕</button>
+    </div>
+    <input id="f-amount" class="amount" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount">
+    <label>Where?<input id="f-place" list="places" maxlength="60" placeholder="Costco, Shell, Amazon…" autocomplete="off"></label>
+    <datalist id="places"></datalist>
+    <div id="place-chips" class="chips"></div>
+    <div class="lbl">Category</div>
+    <div id="cat-chips" class="chips"></div>
+    <div class="row2">
+      <label>Date<input id="f-date" type="date"></label>
+      <label>Note<input id="f-note" maxlength="100" placeholder="optional"></label>
+    </div>
+    <button type="submit" class="btn primary" id="f-save">Save</button>
+    <button type="button" class="btn danger hidden" id="f-delete">Delete</button>
+  </form>
+</dialog>
+<div id="vote" class="vote hidden">+1 vote</div>
+
+<script src="config.js"></script>
+<script src="supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
